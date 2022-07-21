@@ -10,6 +10,11 @@ import "hardhat/console.sol";
 error Raffle__SendMoreToEnterRaffle();
 error Raffle_FundNotTransfer();
 error Raffle_NotOpen();
+error Raffle_CheckupNotNeed(
+    uint256 balance,
+    uint256 arraylength,
+    uint256 rafflestate
+);
 
 contract Raffle is VRFConsumerBaseV2, KeeperCompatibleInterface {
     enum RaffleState {
@@ -24,6 +29,8 @@ contract Raffle is VRFConsumerBaseV2, KeeperCompatibleInterface {
     uint256 private i_entranceFee;
     address payable[] private s_players;
     address private recent_winner;
+    uint256 private immutable i_interval;
+    uint256 private last_time_stamp;
 
     RaffleState private s_rafflestate;
 
@@ -39,7 +46,8 @@ contract Raffle is VRFConsumerBaseV2, KeeperCompatibleInterface {
         uint256 entranceFee,
         bytes32 gasLane,
         uint64 subid,
-        uint32 callbackGasLimit
+        uint32 callbackGasLimit,
+        uint256 interval
     ) VRFConsumerBaseV2(vrfCoordinatorV2) {
         i_entranceFee = entranceFee;
         i_vrfcoordinator = VRFCoordinatorV2Interface(vrfCoordinatorV2);
@@ -47,6 +55,8 @@ contract Raffle is VRFConsumerBaseV2, KeeperCompatibleInterface {
         i_subid = subid;
         i_callbackGasLimit = callbackGasLimit;
         s_rafflestate = RaffleState(0);
+        i_interval = interval;
+        last_time_stamp = block.timestamp;
     }
 
     function enterRaffle() public payable {
@@ -60,18 +70,52 @@ contract Raffle is VRFConsumerBaseV2, KeeperCompatibleInterface {
         }
 
         s_players.push(payable(msg.sender));
+
         // Emit an event when we update a dynamic array or mapping
         // Named events with the function name reversed
         emit RaffleEnter(msg.sender);
     }
 
-    function checkUp(bytes calldata checkdata)
-        external
-        override
-        returns (bool state)
-    {}
+    /**
+1. check if the raffle is open
+2. check the time interval
+3. check the length of player is player is atleast one
+4. check the subscription is fund with gas
 
-    function requestrandomWinner() external {
+ */
+
+    function checkUpkeep(
+        bytes memory /*checkdata*/
+    )
+        public
+        view
+        override
+        returns (
+            bool upkeepneed,
+            bytes memory /*perform data*/
+        )
+    {
+        bool isopen = (RaffleState(0) == s_rafflestate);
+        bool istimecame = ((block.timestamp - last_time_stamp) > i_interval);
+        bool hasplayer = (s_players.length > 0);
+        bool hasbalance = (address(this).balance > 0);
+        bool upkeepneed = (isopen && istimecame && hasplayer && hasbalance);
+    }
+
+    function performUpkeep(
+        bytes calldata /**performdata */
+    ) external override {
+        (bool upkeepneed, ) = checkUpkeep("");
+
+        if (!upkeepneed) {
+            revert Raffle_CheckupNotNeed(
+                address(this).balance,
+                s_players.length,
+                uint256(s_rafflestate)
+            );
+        }
+
+        s_rafflestate = RaffleState(1);
         uint256 requestid = i_vrfcoordinator.requestRandomWords(
             gaslane,
             i_subid,
@@ -92,6 +136,9 @@ contract Raffle is VRFConsumerBaseV2, KeeperCompatibleInterface {
         address payable recentwinner = s_players[Winnerindex];
         (bool success, ) = recentwinner.call{value: address(this).balance}("");
         recent_winner = recentwinner;
+        s_players = new address payable[](0);
+        last_time_stamp = block.timestamp;
+        s_rafflestate = RaffleState(0);
         if (!success) {
             revert Raffle_FundNotTransfer();
         }
@@ -115,5 +162,9 @@ contract Raffle is VRFConsumerBaseV2, KeeperCompatibleInterface {
 
     function getRecentWinner() public view returns (address) {
         return recent_winner;
+    }
+
+    function getNumofWords() public pure returns (uint32) {
+        return NUM_WORDS;
     }
 }
